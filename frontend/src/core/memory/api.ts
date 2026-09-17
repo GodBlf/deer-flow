@@ -2,15 +2,17 @@ import { fetch } from "../api/fetcher";
 import { getBackendBaseURL } from "../config";
 
 import type {
+  MemoryCapabilities,
+  MemoryScope,
   MemoryFactInput,
   MemoryFactPatchInput,
   UserMemory,
 } from "./types";
 
-async function readMemoryResponse(
+async function readMemoryResponse<T = UserMemory>(
   response: Response,
   fallbackMessage: string,
-): Promise<UserMemory> {
+): Promise<T> {
   function formatErrorDetail(detail: unknown): string | null {
     if (typeof detail === "string") {
       return detail;
@@ -77,11 +79,22 @@ async function readMemoryResponse(
     );
   }
 
-  return response.json() as Promise<UserMemory>;
+  return response.json() as Promise<T>;
 }
 
-export async function loadMemory(): Promise<UserMemory> {
-  const response = await fetch(`${getBackendBaseURL()}/api/memory`);
+function memoryURL(path = "", agentName?: string) {
+  const query =
+    agentName === undefined
+      ? ""
+      : `?${new URLSearchParams({ agent_name: agentName.toLowerCase() })}`;
+  return `${getBackendBaseURL()}/api/memory${path}${query}`;
+}
+
+export async function loadMemory(
+  agentName?: string,
+  signal?: AbortSignal,
+): Promise<UserMemory> {
+  const response = await fetch(memoryURL("", agentName), { signal });
   return readMemoryResponse(response, "Failed to fetch memory");
 }
 
@@ -92,9 +105,12 @@ export async function clearMemory(): Promise<UserMemory> {
   return readMemoryResponse(response, "Failed to clear memory");
 }
 
-export async function deleteMemoryFact(factId: string): Promise<UserMemory> {
+export async function deleteMemoryFact(
+  factId: string,
+  agentName?: string,
+): Promise<UserMemory> {
   const response = await fetch(
-    `${getBackendBaseURL()}/api/memory/facts/${encodeURIComponent(factId)}`,
+    memoryURL(`/facts/${encodeURIComponent(factId)}`, agentName),
     {
       method: "DELETE",
     },
@@ -120,8 +136,9 @@ export async function importMemory(memory: UserMemory): Promise<UserMemory> {
 
 export async function createMemoryFact(
   input: MemoryFactInput,
+  agentName?: string,
 ): Promise<UserMemory> {
-  const response = await fetch(`${getBackendBaseURL()}/api/memory/facts`, {
+  const response = await fetch(memoryURL("/facts", agentName), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -134,9 +151,10 @@ export async function createMemoryFact(
 export async function updateMemoryFact(
   factId: string,
   input: MemoryFactPatchInput,
+  agentName?: string,
 ): Promise<UserMemory> {
   const response = await fetch(
-    `${getBackendBaseURL()}/api/memory/facts/${encodeURIComponent(factId)}`,
+    memoryURL(`/facts/${encodeURIComponent(factId)}`, agentName),
     {
       method: "PATCH",
       headers: {
@@ -146,4 +164,29 @@ export async function updateMemoryFact(
     },
   );
   return readMemoryResponse(response, "Failed to update memory fact");
+}
+
+export async function loadMemoryCapabilities(
+  signal?: AbortSignal,
+): Promise<MemoryCapabilities> {
+  return readMemoryResponse<MemoryCapabilities>(
+    await fetch(memoryURL("/capabilities"), { signal }),
+    "Failed to load memory capabilities",
+  );
+}
+
+export async function loadMemoryScopes(
+  signal?: AbortSignal,
+): Promise<{ scopes: MemoryScope[] }> {
+  return readMemoryResponse<{ scopes: MemoryScope[] }>(
+    await fetch(memoryURL("/scopes"), { signal }),
+    "Failed to load memory scopes",
+  );
+}
+
+export async function clearMemoryFacts(agentName: string): Promise<UserMemory> {
+  return readMemoryResponse(
+    await fetch(memoryURL("/facts", agentName), { method: "DELETE" }),
+    "Failed to clear selected facts",
+  );
 }

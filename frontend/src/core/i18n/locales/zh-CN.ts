@@ -1057,6 +1057,19 @@ export const zhCN: Translations = {
       about: "关于",
     },
     memory: {
+      defaultScope: "默认助手",
+      scopeLabel: "事实范围",
+      orphanedScope: "Agent 配置已不存在",
+      scopeUnsupported: "此记忆后端不支持按 agent 浏览。仍可使用现有记忆操作。",
+      sharedSummaries: "共享用户上下文",
+      clearScope: "清空当前 agent 事实",
+      clearScopeDescription:
+        "永久删除此 agent 的所有事实，保留共享摘要和其他 agent 的事实。当前 agent：",
+      clearScopeSuccess: "当前 agent 事实已清空",
+      transferScope:
+        "导入 / 导出范围为共享摘要与默认助手事实，不随当前 agent 选择变化。导入会覆盖共享摘要和默认事实。",
+      unknownSource: "未知",
+
       title: "记忆",
       description:
         "DeerFlow 会在后台不断从你的对话中自动学习。这些记忆能帮助 DeerFlow 更好地理解你，并提供更个性化的体验。",

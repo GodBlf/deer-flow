@@ -962,6 +962,17 @@ export interface Translations {
       importInvalidFile: string;
       importSuccess: string;
       manualFactSource: string;
+      defaultScope: string;
+      scopeLabel: string;
+      orphanedScope: string;
+      scopeUnsupported: string;
+      sharedSummaries: string;
+      clearScope: string;
+      clearScopeDescription: string;
+      clearScopeSuccess: string;
+      transferScope: string;
+      unknownSource: string;
+
       addFact: string;
       addFactTitle: string;
       editFactTitle: string;

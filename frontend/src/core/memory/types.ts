@@ -5,6 +5,9 @@ export interface MemoryFact {
   confidence: number;
   createdAt: string;
   source: string;
+  sourceThreadId?: string;
+  scope?: { userId: string | null; agentName: string | null };
+  updatedAt?: string;
 }
 
 export interface MemoryFactInput {
@@ -51,4 +54,20 @@ export interface UserMemory {
     };
   };
   facts: MemoryFact[];
+}
+
+export interface MemoryCapabilities {
+  scoped_read: boolean;
+  scoped_fact_crud: boolean;
+  scope_discovery: boolean;
+  scoped_clear: boolean;
+  shared_summaries: boolean;
+}
+
+export interface MemoryScope {
+  agent_name: string;
+  display_name: string | null;
+  fact_count: number;
+  last_updated: string | null;
+  orphaned: boolean;
 }

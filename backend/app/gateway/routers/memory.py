@@ -1,6 +1,7 @@
 """Memory API router for retrieving and managing global memory data."""
 
 import asyncio
+import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -8,6 +9,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.gateway.internal_auth import get_trusted_internal_owner_user_id
 from deerflow.agents.memory import MemoryConflictError, MemoryCorruptionError, MemoryManager, get_memory_manager
+from deerflow.agents.memory.manager import MemoryFactScope, MemoryManagementCapabilities
+from deerflow.config.agents_config import list_custom_agents
 from deerflow.config.memory_config import get_memory_config
 from deerflow.config.paths import make_safe_user_id
 from deerflow.runtime.user_context import get_effective_user_id
@@ -35,6 +38,59 @@ def _resolve_memory_user_id(request: Request) -> str:
     if raw_owner:
         return make_safe_user_id(raw_owner)
     return get_effective_user_id()
+
+
+def _scoped_kwargs(manager: MemoryManager, agent_name: str | None, capability: str) -> dict[str, str]:
+    """Never silently fall back to a backend's unscoped operation."""
+    if agent_name is None:
+        return {}
+    if agent_name != "__default__" and re.fullmatch(r"[A-Za-z0-9-]+", agent_name) is None:
+        raise HTTPException(status_code=422, detail="Invalid agent_name; use letters, digits and hyphens, or __default__.")
+    if not getattr(manager.management_capabilities(), capability):
+        raise _unsupported_501(manager, capability)
+    return {"agent_name": agent_name.lower()}
+
+
+class MemoryScopeResponse(MemoryFactScope):
+    display_name: str | None = None
+    orphaned: bool = False
+
+
+class MemoryScopesResponse(BaseModel):
+    scopes: list[MemoryScopeResponse]
+
+
+@router.get("/memory/capabilities", response_model=MemoryManagementCapabilities)
+async def get_memory_capabilities() -> MemoryManagementCapabilities:
+    manager = await asyncio.to_thread(get_memory_manager)
+    return manager.management_capabilities()
+
+
+@router.get("/memory/scopes", response_model=MemoryScopesResponse)
+async def list_memory_scopes(http_request: Request) -> MemoryScopesResponse:
+    manager = await asyncio.to_thread(get_memory_manager)
+    if not manager.management_capabilities().scope_discovery:
+        raise _unsupported_501(manager, "scope discovery")
+    user_id = _resolve_memory_user_id(http_request)
+
+    def discover() -> MemoryScopesResponse:
+        stored = manager.list_fact_scopes(user_id=user_id)
+        configs = {agent.name.lower(): agent for agent in list_custom_agents(user_id=user_id)}
+        scopes = {scope.agent_name: MemoryScopeResponse(**scope.model_dump(), orphaned=scope.agent_name != "__default__" and scope.agent_name not in configs) for scope in stored}
+        scopes.setdefault("__default__", MemoryScopeResponse(agent_name="__default__"))
+        for name, config in configs.items():
+            scope = scopes.setdefault(name, MemoryScopeResponse(agent_name=name))
+            scope.display_name = config.display_name
+        return MemoryScopesResponse(scopes=sorted(scopes.values(), key=lambda scope: (scope.agent_name != "__default__", scope.agent_name)))
+
+    try:
+        return await asyncio.to_thread(discover)
+    except NotImplementedError:
+        raise _unsupported_501(manager, "scope discovery") from None
+    except (MemoryConflictError, MemoryCorruptionError) as exc:
+        raise _map_memory_manager_error(exc) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to list memory scopes.") from exc
 
 
 class ContextSection(BaseModel):
@@ -71,6 +127,7 @@ class Fact(BaseModel):
     confidence: float = Field(default=0.5, description="Confidence score (0-1)")
     createdAt: str = Field(default="", description="Creation timestamp")
     source: str = Field(default="unknown", description="Legacy source string; structured metadata remains internal to storage")
+    sourceThreadId: str | None = Field(default=None, description="Conversation thread id when explicitly recorded in provenance")
     sourceError: str | None = Field(default=None, description="Optional description of the prior mistake or wrong approach")
     schemaVersion: int | None = Field(default=None, description="Per-fact schema version")
     status: str | None = Field(default=None, description="Fact lifecycle status")
@@ -149,7 +206,7 @@ def _unsupported_501(manager: object, label: str) -> HTTPException:
     )
 
 
-async def _get_memory_or_501(manager: MemoryManager, user_id: str, label: str) -> dict[str, Any]:
+async def _get_memory_or_501(manager: MemoryManager, user_id: str, label: str, agent_name: str | None = None) -> dict[str, Any]:
     """Read the full memory doc; 501 if the backend doesn't expose one.
 
     ``get_memory`` is tier-2 (default ``raise NotImplementedError``); a minimal
@@ -160,7 +217,7 @@ async def _get_memory_or_501(manager: MemoryManager, user_id: str, label: str) -
     endpoint's verb, e.g. "get memory" / "export memory" / "reload memory").
     """
     try:
-        return await asyncio.to_thread(manager.get_memory, user_id=user_id)
+        return await asyncio.to_thread(manager.get_memory, user_id=user_id, **_scoped_kwargs(manager, agent_name, "scoped_read"))
     except NotImplementedError:
         raise _unsupported_501(manager, label) from None
     except (MemoryConflictError, MemoryCorruptionError) as exc:
@@ -206,10 +263,10 @@ class MemoryStatusResponse(BaseModel):
     response_model=MemoryResponse,
     response_model_exclude_none=True,
     summary="Get Memory Data",
-    description="Retrieve the current global memory data including user context, history, and facts.",
+    description="Retrieve shared user context and facts for the optional agent_name. Omission preserves the backend default.",
 )
-async def get_memory(http_request: Request) -> MemoryResponse:
-    """Get the current global memory data.
+async def get_memory(http_request: Request, agent_name: str | None = None) -> MemoryResponse:
+    """Get shared summaries and the selected/default agent facts.
 
     Returns:
         The current memory data with user context, history, and facts.
@@ -243,7 +300,7 @@ async def get_memory(http_request: Request) -> MemoryResponse:
         ```
     """
     manager = await asyncio.to_thread(get_memory_manager)
-    memory_data = await _get_memory_or_501(manager, _resolve_memory_user_id(http_request), "get memory")
+    memory_data = await _get_memory_or_501(manager, _resolve_memory_user_id(http_request), "get memory", agent_name)
     return MemoryResponse(**memory_data)
 
 
@@ -309,7 +366,7 @@ async def clear_memory(http_request: Request) -> MemoryResponse:
     summary="Create Memory Fact",
     description="Create a single saved memory fact manually.",
 )
-async def create_memory_fact_endpoint(request: FactCreateRequest, http_request: Request) -> MemoryResponse:
+async def create_memory_fact_endpoint(request: FactCreateRequest, http_request: Request, agent_name: str | None = None) -> MemoryResponse:
     """Create a single fact manually."""
     manager = await asyncio.to_thread(get_memory_manager)
     try:
@@ -319,6 +376,7 @@ async def create_memory_fact_endpoint(request: FactCreateRequest, http_request: 
             category=request.category,
             confidence=request.confidence,
             user_id=_resolve_memory_user_id(http_request),
+            **_scoped_kwargs(manager, agent_name, "scoped_fact_crud"),
         )
     except NotImplementedError:
         raise _unsupported_501(manager, "create fact") from None
@@ -335,6 +393,22 @@ async def create_memory_fact_endpoint(request: FactCreateRequest, http_request: 
     return MemoryResponse(**memory_data)
 
 
+@router.delete("/memory/facts", response_model=MemoryResponse, response_model_exclude_none=True)
+async def clear_memory_facts(http_request: Request, agent_name: str) -> MemoryResponse:
+    """Clear exactly one explicit bucket; omission cannot mean clear-all."""
+    manager = await asyncio.to_thread(get_memory_manager)
+    scope = _scoped_kwargs(manager, agent_name, "scoped_clear")
+    try:
+        data = await asyncio.to_thread(manager.clear_memory, user_id=_resolve_memory_user_id(http_request), **scope)
+    except NotImplementedError:
+        raise _unsupported_501(manager, "scoped clear") from None
+    except (MemoryConflictError, MemoryCorruptionError) as exc:
+        raise _map_memory_manager_error(exc) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to clear selected facts.") from exc
+    return MemoryResponse(**data)
+
+
 @router.delete(
     "/memory/facts/{fact_id}",
     response_model=MemoryResponse,
@@ -342,11 +416,11 @@ async def create_memory_fact_endpoint(request: FactCreateRequest, http_request: 
     summary="Delete Memory Fact",
     description="Delete a single saved memory fact by its fact id.",
 )
-async def delete_memory_fact_endpoint(fact_id: str, http_request: Request) -> MemoryResponse:
+async def delete_memory_fact_endpoint(fact_id: str, http_request: Request, agent_name: str | None = None) -> MemoryResponse:
     """Delete a single fact from memory by fact id."""
     manager = await asyncio.to_thread(get_memory_manager)
     try:
-        memory_data = await asyncio.to_thread(manager.delete_fact, fact_id, user_id=_resolve_memory_user_id(http_request))
+        memory_data = await asyncio.to_thread(manager.delete_fact, fact_id, user_id=_resolve_memory_user_id(http_request), **_scoped_kwargs(manager, agent_name, "scoped_fact_crud"))
     except NotImplementedError:
         raise _unsupported_501(manager, "delete fact") from None
     except KeyError as exc:
@@ -366,7 +440,7 @@ async def delete_memory_fact_endpoint(fact_id: str, http_request: Request) -> Me
     summary="Patch Memory Fact",
     description="Partially update a single saved memory fact by its fact id while preserving omitted fields.",
 )
-async def update_memory_fact_endpoint(fact_id: str, request: FactPatchRequest, http_request: Request) -> MemoryResponse:
+async def update_memory_fact_endpoint(fact_id: str, request: FactPatchRequest, http_request: Request, agent_name: str | None = None) -> MemoryResponse:
     """Partially update a single fact manually."""
     manager = await asyncio.to_thread(get_memory_manager)
     try:
@@ -377,6 +451,7 @@ async def update_memory_fact_endpoint(fact_id: str, request: FactPatchRequest, h
             category=request.category,
             confidence=request.confidence,
             user_id=_resolve_memory_user_id(http_request),
+            **_scoped_kwargs(manager, agent_name, "scoped_fact_crud"),
         )
     except NotImplementedError:
         raise _unsupported_501(manager, "update fact") from None

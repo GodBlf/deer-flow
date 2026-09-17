@@ -190,3 +190,21 @@ mutation permissions, and cache ownership remain in the existing hooks. Skill di
 metadata; runtime names and full descriptions remain unchanged. Public, custom,
 integration, and legacy sources must stay distinct. Community currently offers
 archive import, not a remote marketplace. Screenshot E2E fixtures are demo data.
+
+### Scoped memory settings
+
+Settings > Memory reads management capabilities before enabling agent scopes.
+The selector combines configured and orphaned owned buckets, and facts/CRUD are
+bound to the selected canonical name; shared summaries are rendered once.
+Document query keys include account and agent (legacy omission remains distinct
+from explicit `__default__`). Mutations capture account and agent before awaiting,
+cancel stale reads again on completion, and update only that document plus scope
+statistics. Import/all-memory clear invalidate every document for that account.
+Keyed scope editors reset dialogs on agent/account changes without redirecting
+in-flight writes. Missing orphan scopes fall back to the default selector.
+
+Import/export keep their legacy scope, explicitly labeled for DeerMem as shared
+summaries plus default facts. Selected-facts clearing is separate from all-memory
+clearing. Both Next memory proxy routes preserve query parameters. Static demos
+advertise no scoped management and disable writes. Tests live in the memory hook,
+settings component, proxy, and memory-scopes E2E suites.

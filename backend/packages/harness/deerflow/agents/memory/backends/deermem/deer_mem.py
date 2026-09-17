@@ -29,7 +29,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import PrivateAttr
 
-from deerflow.agents.memory.manager import MemoryConflictError, MemoryCorruptionError, MemoryManager
+from deerflow.agents.memory.manager import MemoryConflictError, MemoryCorruptionError, MemoryFactScope, MemoryManagementCapabilities, MemoryManager
 
 from .deermem.config import DeerMemConfig
 from .deermem.core.eviction import EVICTION_POLICY_HYBRID_V1
@@ -44,7 +44,7 @@ from .deermem.core.message_processing import (
 from .deermem.core.paths import DEFAULT_AGENT_BUCKET
 from .deermem.core.prompt import format_memory_for_injection, load_prompt, load_prompt_messages, warm_tiktoken_cache
 from .deermem.core.queue import MemoryUpdateQueue, QueueFull
-from .deermem.core.storage import MemoryRevisionConflict, MemoryStorageCorruption, create_storage
+from .deermem.core.storage import MemoryRevisionConflict, MemoryStorage, MemoryStorageCorruption, create_storage
 from .deermem.core.updater import MemoryUpdater, _coerce_source_confidence
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,10 @@ def _compat_document(memory_data: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(memory_data)
     for fact in result.get("facts", []):
         if isinstance(fact, dict):
-            fact["source"] = _legacy_source_value(fact.get("source"))
+            source = fact.get("source")
+            if isinstance(source, dict) and source.get("type") == "conversation" and isinstance(source.get("threadId"), str):
+                fact["sourceThreadId"] = source["threadId"]
+            fact["source"] = _legacy_source_value(source)
     return result
 
 
@@ -441,6 +444,18 @@ class DeerMem(MemoryManager):
                     self._retrieval_warmed_scopes.add(key)
 
     # ── Manage ───────────────────────────────────────────────────────────
+    def management_capabilities(self) -> MemoryManagementCapabilities:
+        return MemoryManagementCapabilities(
+            scoped_read=True,
+            scoped_fact_crud=True,
+            scope_discovery=type(self._storage).list_fact_scopes is not MemoryStorage.list_fact_scopes,
+            scoped_clear=True,
+            shared_summaries=True,
+        )
+
+    def list_fact_scopes(self, *, user_id: str) -> list[MemoryFactScope]:
+        return [MemoryFactScope(**scope) for scope in _call_backend(lambda: self._storage.list_fact_scopes(user_id=user_id))]
+
     def get_memory(
         self,
         *,

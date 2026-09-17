@@ -338,7 +338,7 @@ def test_portability_only_abc_contract_imports_deerflow():
                 deerflow_imports.append((p.relative_to(root).as_posix(), s))
     assert len(deerflow_imports) == 1, deerflow_imports
     assert deerflow_imports[0][0] == "deer_mem.py"
-    assert "memory.manager import MemoryConflictError, MemoryCorruptionError, MemoryManager" in deerflow_imports[0][1]
+    assert "memory.manager import MemoryConflictError, MemoryCorruptionError, MemoryFactScope, MemoryManagementCapabilities, MemoryManager" in deerflow_imports[0][1]
 
 
 # Minimal vendored host contract (what another agent would ship). DeerMem only
@@ -413,6 +413,18 @@ class MemoryManager(BaseModel):
     def on_turn_start(self, turn_number, message, **kwargs) -> None:
         return None
 
+class MemoryManagementCapabilities(BaseModel):
+    scoped_read: bool = False
+    scoped_fact_crud: bool = False
+    scope_discovery: bool = False
+    scoped_clear: bool = False
+    shared_summaries: bool = False
+
+class MemoryFactScope(BaseModel):
+    agent_name: str
+    fact_count: int = 0
+    last_updated: str | None = None
+
 class MemoryConflictError(RuntimeError): ...
 class MemoryCorruptionError(RuntimeError): ...
 '''
@@ -439,11 +451,11 @@ def test_portability_vendor_to_other_agent(tmp_path, monkeypatch):
     # Repoint the single ABC-contract import line to the vendored manager.
     deer_mem_file = dst_pkg / "deer_mem.py"
     text = deer_mem_file.read_text(encoding="utf-8")
-    contract_import = "from deerflow.agents.memory.manager import MemoryConflictError, MemoryCorruptionError, MemoryManager"
+    contract_import = "from deerflow.agents.memory.manager import MemoryConflictError, MemoryCorruptionError, MemoryFactScope, MemoryManagementCapabilities, MemoryManager"
     assert contract_import in text
     text = text.replace(
         contract_import,
-        "from otheragent.manager import MemoryConflictError, MemoryCorruptionError, MemoryManager",
+        "from otheragent.manager import MemoryConflictError, MemoryCorruptionError, MemoryFactScope, MemoryManagementCapabilities, MemoryManager",
     )
     deer_mem_file.write_text(text, encoding="utf-8")
 

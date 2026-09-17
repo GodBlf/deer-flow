@@ -9,7 +9,12 @@ import {
 import { fetchFeatures } from "@/core/features/api";
 import { loadLarkIntegrationStatus } from "@/core/integrations/lark/api";
 import { loadMCPConfig } from "@/core/mcp/api";
-import { loadMemory } from "@/core/memory/api";
+import {
+  loadMemory,
+  loadMemoryCapabilities,
+  loadMemoryScopes,
+  clearMemoryFacts,
+} from "@/core/memory/api";
 import {
   createScheduledTask,
   fetchScheduledTaskRuns,
@@ -82,6 +87,17 @@ describe("static website API requests", () => {
       has_more: false,
       next_before_seq: null,
     });
+    await expect(loadMemoryCapabilities()).resolves.toEqual({
+      scoped_read: false,
+      scoped_fact_crud: false,
+      scope_discovery: false,
+      scoped_clear: false,
+      shared_summaries: false,
+    });
+    await expect(loadMemoryScopes()).resolves.toEqual({ scopes: [] });
+    await expect(clearMemoryFacts("writer")).rejects.toThrow(
+      "Unavailable in static demo mode",
+    );
     await expect(loadMemory()).resolves.toMatchObject({
       facts: [],
       user: {},

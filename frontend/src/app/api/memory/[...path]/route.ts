@@ -14,11 +14,14 @@ async function proxyRequest(request: NextRequest, pathname: string) {
   headers.delete("content-length");
 
   const hasBody = !["GET", "HEAD"].includes(request.method);
-  const response = await fetch(buildBackendUrl(pathname), {
-    method: request.method,
-    headers,
-    body: hasBody ? await request.arrayBuffer() : undefined,
-  });
+  const response = await fetch(
+    buildBackendUrl(pathname + request.nextUrl.search),
+    {
+      method: request.method,
+      headers,
+      body: hasBody ? await request.arrayBuffer() : undefined,
+    },
+  );
 
   return new Response(await response.arrayBuffer(), {
     status: response.status,

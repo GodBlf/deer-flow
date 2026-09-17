@@ -426,6 +426,10 @@ class MemoryStorage(abc.ABC):
         """Apply one repository change set; providers may override atomically."""
         raise NotImplementedError
 
+    def list_fact_scopes(self, *, user_id: str) -> list[dict[str, Any]]:
+        """Return metadata for persisted buckets; optional for custom storage."""
+        raise NotImplementedError
+
     def clear_all(self, *, user_id: str | None = None) -> dict[str, Any]:
         """Clear global summaries and every agent fact bucket for one user."""
         raise NotImplementedError
@@ -1409,6 +1413,83 @@ class FileMemoryStorage(MemoryStorage):
                 fact_ids=deleted_metadata_ids,
             )
         return True
+
+    def list_fact_scopes(self, *, user_id: str) -> list[dict[str, Any]]:
+        """Enumerate one user's canonical buckets without caching full documents.
+
+        Retain only counts/timestamps while reading one fact at a time. Refuse
+        symlinked ancestors and skip symlink entries, including shard directories.
+        The user file lock gives a consistent view of committed writes.
+        """
+        path = self._get_memory_file_path(user_id=user_id)
+        if any(parent.is_symlink() for parent in (path, path.parent, path.parent.parent)):
+            raise MemoryStorageCorruption("Symlinked memory root")
+        root = path.parent / "agents"
+        scopes = {DEFAULT_AGENT_BUCKET: {"agent_name": DEFAULT_AGENT_BUCKET, "fact_count": 0, "last_updated": None}}
+        if root.is_symlink():
+            raise MemoryStorageCorruption("Symlinked agents root")
+
+        def contains_symlink(directory: Path) -> bool:
+            if directory.is_symlink():
+                return True
+            for folder, dirs, files in os.walk(directory, followlinks=False):
+                if any((Path(folder) / child).is_symlink() for child in dirs + files):
+                    return True
+            return False
+
+        # Discovery must also find unread legacy buckets. Reuse normal migration
+        # only on safe trees, and do not load current buckets into document caches.
+        default_safe = not any(contains_symlink(root / name) for name in (DEFAULT_AGENT_BUCKET, "lead-agent"))
+        if default_safe and (self._global_json_needs_migration(path) or (root / "lead-agent").exists() or self._legacy_agent_memory_path(path, DEFAULT_AGENT_BUCKET).exists()):
+            self.load(DEFAULT_AGENT_BUCKET, user_id=user_id)
+        if root.exists():
+            for directory in sorted(root.iterdir()):
+                if not directory.is_dir() or contains_symlink(directory):
+                    continue
+                try:
+                    validate_agent_name(directory.name)
+                except ValueError:
+                    continue
+                if default_safe and directory.name == directory.name.lower() and self._legacy_agent_memory_path(path, directory.name).exists():
+                    self.load(directory.name, user_id=user_id)
+        with self._scope_lock(self._cache_key(user_id=user_id)), _process_file_lock(path.parent / ".memory.lock", float(getattr(self._config, "file_lock_timeout_seconds", 10))):
+            self._recover_if_needed(path)
+            if not root.exists():
+                return list(scopes.values())
+            for directory in sorted(root.iterdir()):
+                if directory.is_symlink() or not directory.is_dir():
+                    continue
+                name = directory.name
+                try:
+                    validate_agent_name(name)
+                except ValueError:
+                    continue
+                if name != name.lower():
+                    continue
+                facts_root = directory / "facts"
+                if facts_root.is_symlink() or not facts_root.is_dir():
+                    continue
+                count = 0
+                latest = None
+                for folder, dirs, files in os.walk(facts_root, followlinks=False):
+                    dirs[:] = [d for d in dirs if not (Path(folder) / d).is_symlink()]
+                    for filename in files:
+                        fact_path = Path(folder) / filename
+                        if fact_path.suffix != ".md" or fact_path.is_symlink():
+                            continue
+                        fact = self._validate_loaded_fact(_parse_fact_markdown(fact_path), fact_path, user_id=user_id, agent_name=name)
+                        count += 1
+                        timestamp = fact.get("updatedAt") or fact.get("createdAt")
+                        if timestamp:
+                            try:
+                                parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                            except ValueError as exc:
+                                raise MemoryStorageCorruption("Invalid fact timestamp") from exc
+                            parsed = parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+                            latest = max(latest, parsed) if latest is not None else parsed
+                if count or name == DEFAULT_AGENT_BUCKET:
+                    scopes[name] = {"agent_name": name, "fact_count": count, "last_updated": latest.isoformat() if latest else None}
+        return list(scopes.values())
 
     def clear_all(self, *, user_id: str | None = None) -> dict[str, Any]:
         """Clear one user's summaries and all agent facts, preserving agent configs."""

@@ -300,3 +300,32 @@ Latin words and CJK bigrams both participate in mixed-script similarity.
 Whitespace-separated CJK runs retain adjacent-character ordering.
 INFO logs identify the target and proposal index without memory content and
 explicitly describe a proposed merge, not a completed persistence audit.
+
+#### Human-facing scoped management
+
+`MemoryManager.management_capabilities()` explicitly opts into scoped reads,
+fact CRUD, discovery and clearing; defaults are false. DeerMem enables these
+capabilities (discovery also requires storage support). Optional
+`list_fact_scopes(user_id=...)` returns only canonical names, fact counts and
+latest fact timestamps. File storage owns enumeration under the resolved user,
+skips symlinked buckets/shards/files, and uses the existing user lock. It does
+not persist a fact index or load every scope into the document cache.
+
+Gateway resolves the owner with `_resolve_memory_user_id`, validates and
+lowercases `agent_name`, then forwards it. `__default__` is accepted only as the
+reserved default memory bucket, never a custom-agent configuration name.
+`GET /api/memory/capabilities` and `/scopes` support Settings discovery; Gateway
+joins owned storage scopes with visible custom-agent configs for labels and
+orphan markers. Missing configs do not prevent fact management. Explicit scoped
+operations on unsupported backends return 501 without retrying unscoped.
+
+`DELETE /api/memory/facts` requires an explicit `agent_name` and clears facts
+only. `DELETE /api/memory` retains all-user-memory semantics. Export/import
+remain unscoped and retain shared summaries plus default facts for DeerMem.
+Scoped reads and single-fact CRUD are additive to the existing endpoints.
+`sourceThreadId` is an optional compatibility projection of recorded conversation
+provenance; unknown source strings must not be treated as thread links.
+
+Regressions: `tests/test_memory_scopes.py`, `tests/test_memory_router.py` and
+`tests/test_memory_cancel_by_agent.py`. Clearing cancels pending debounce items,
+not extraction already removed from the queue for processing.

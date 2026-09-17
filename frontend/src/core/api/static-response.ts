@@ -74,6 +74,18 @@ export async function staticApiResponse(
     case "suggestions/config":
       data = { enabled: false, max_suggestions: 0 };
       break;
+    case "memory/capabilities":
+      data = {
+        scoped_read: false,
+        scoped_fact_crud: false,
+        scope_discovery: false,
+        scoped_clear: false,
+        shared_summaries: false,
+      };
+      break;
+    case "memory/scopes":
+      data = { scopes: [] };
+      break;
     case "memory":
     case "memory/export": {
       const empty = { summary: "", updatedAt: "" };

@@ -1119,6 +1119,20 @@ export const enUS: Translations = {
       about: "About",
     },
     memory: {
+      defaultScope: "Default assistant",
+      scopeLabel: "Fact scope",
+      orphanedScope: "Agent configuration missing",
+      scopeUnsupported:
+        "This memory backend does not support browsing agent scopes. Existing memory operations remain available.",
+      sharedSummaries: "Shared user context",
+      clearScope: "Clear selected agent facts",
+      clearScopeDescription:
+        "Permanently delete all facts for this agent. Shared summaries and other agents are preserved. Selected agent:",
+      clearScopeSuccess: "Selected agent facts cleared",
+      transferScope:
+        "Import / export: shared summaries and default assistant facts. This does not follow the selected agent. Import replaces shared summaries and default facts.",
+      unknownSource: "Unknown",
+
       title: "Memory",
       description:
         "DeerFlow automatically learns from your conversations in the background. These memories help DeerFlow understand you better and deliver a more personalized experience.",

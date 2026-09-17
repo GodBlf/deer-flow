@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { createMarkdownLinkComponent } from "@/components/workspace/messages/markdown-link";
+import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
 import { exportMemory } from "@/core/memory/api";
 import {
@@ -32,13 +33,18 @@ import {
   useDeleteMemoryFact,
   useImportMemory,
   useMemory,
+  useMemoryCapabilities,
+  useMemoryScopes,
+  useClearMemoryFacts,
   useUpdateMemoryFact,
 } from "@/core/memory/hooks";
+import type { MemoryCapabilities } from "@/core/memory/types";
 import type {
   MemoryFactInput,
   MemoryFactPatchInput,
   UserMemory,
 } from "@/core/memory/types";
+import { isStaticWebsiteOnly } from "@/core/static-mode";
 import {
   SafeStreamdown,
   toStreamdownComponents,
@@ -279,7 +285,110 @@ function upperFirst(str: string) {
 
 export function MemorySettingsPage() {
   const { t } = useI18n();
-  const { memory, isLoading, error } = useMemory();
+  const { user } = useAuth();
+  return (
+    <MemoryBrowser key={user?.id ?? "anonymous"} labels={t.settings.memory} />
+  );
+}
+
+function MemoryBrowser({
+  labels,
+}: {
+  labels: ReturnType<typeof useI18n>["t"]["settings"]["memory"];
+}) {
+  const { t } = useI18n();
+  const capabilities = useMemoryCapabilities();
+  const scoped =
+    capabilities.data?.scoped_read === true &&
+    capabilities.data.scope_discovery;
+  const scopes = useMemoryScopes(scoped);
+  const [selection, setSelection] = useState("__default__");
+  const selected =
+    scopes.data &&
+    !scopes.data.scopes.some((scope) => scope.agent_name === selection)
+      ? "__default__"
+      : selection;
+  const scope = scopes.data?.scopes.find(
+    (item) => item.agent_name === selected,
+  );
+  const label =
+    selected === "__default__"
+      ? labels.defaultScope
+      : (scope?.display_name ?? selected);
+  if (capabilities.isLoading) return <p>{t.common.loading}</p>;
+  if (capabilities.error)
+    return <p role="alert">{capabilities.error.message}</p>;
+  return (
+    <SettingsSection title={labels.title} description={labels.description}>
+      <div className="space-y-4">
+        {scoped ? (
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="memory-scope">
+              {labels.scopeLabel}
+            </label>
+            <select
+              id="memory-scope"
+              className="bg-background w-full rounded-md border p-2 text-sm"
+              value={selected}
+              onChange={(event) => setSelection(event.target.value)}
+              disabled={scopes.isLoading}
+            >
+              {(
+                scopes.data?.scopes ?? [
+                  {
+                    agent_name: "__default__",
+                    display_name: null,
+                    fact_count: 0,
+                    orphaned: false,
+                  },
+                ]
+              ).map((item) => (
+                <option key={item.agent_name} value={item.agent_name}>
+                  {item.agent_name === "__default__"
+                    ? labels.defaultScope
+                    : item.display_name
+                      ? `${item.display_name} (${item.agent_name})`
+                      : item.agent_name}{" "}
+                  · {item.fact_count}
+                  {item.orphaned ? ` · ${labels.orphanedScope}` : ""}
+                </option>
+              ))}
+            </select>
+            {scopes.error && <p role="alert">{scopes.error.message}</p>}
+          </div>
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            {labels.scopeUnsupported}
+          </p>
+        )}
+        <MemoryScopeEditor
+          key={scoped ? selected : "legacy"}
+          agentName={scoped ? selected : undefined}
+          scopeLabel={label}
+          capabilities={capabilities.data}
+        />
+      </div>
+    </SettingsSection>
+  );
+}
+
+function MemoryScopeEditor({
+  agentName,
+  scopeLabel,
+  capabilities,
+}: {
+  agentName?: string;
+  scopeLabel: string;
+  capabilities?: MemoryCapabilities;
+}) {
+  const { t } = useI18n();
+  const { memory, isLoading, error } = useMemory(agentName);
+  const clearFacts = useClearMemoryFacts();
+  const [clearFactsDialogOpen, setClearFactsDialogOpen] = useState(false);
+  const readOnly = isStaticWebsiteOnly();
+  const canEditFacts =
+    !readOnly &&
+    (agentName === undefined || capabilities?.scoped_fact_crud === true);
   const clearMemory = useClearMemory();
   const createMemoryFact = useCreateMemoryFact();
   const deleteMemoryFact = useDeleteMemoryFact();
@@ -465,7 +574,10 @@ export function MemorySettingsPage() {
     if (!factToDelete) return;
 
     try {
-      await deleteMemoryFact.mutateAsync(factToDelete.id);
+      await deleteMemoryFact.mutateAsync({
+        factId: factToDelete.id,
+        agentName,
+      });
       toast.success(factDeleteSuccess);
       setFactToDelete(null);
     } catch (err) {
@@ -516,12 +628,13 @@ export function MemorySettingsPage() {
           confidence: input.confidence,
         };
         await updateMemoryFact.mutateAsync({
+          agentName,
           factId: factToEdit.id,
           input: patchInput,
         });
         toast.success(editFactSuccess);
       } else {
-        await createMemoryFact.mutateAsync(input);
+        await createMemoryFact.mutateAsync({ input, agentName });
         toast.success(addFactSuccess);
       }
       setFactEditorOpen(false);
@@ -537,10 +650,7 @@ export function MemorySettingsPage() {
 
   return (
     <>
-      <SettingsSection
-        title={t.settings.memory.title}
-        description={t.settings.memory.description}
-      >
+      <div>
         {isLoading ? (
           <div className="text-muted-foreground text-sm">
             {t.common.loading}
@@ -594,6 +704,11 @@ export function MemorySettingsPage() {
                 </ToggleGroup>
               </div>
 
+              {capabilities?.shared_summaries && (
+                <p className="text-muted-foreground text-sm">
+                  {t.settings.memory.transferScope}
+                </p>
+              )}
               {/* Row 2: actions — constructive group on the left, destructive separated to the right */}
               <div className="flex flex-wrap items-center gap-2">
                 <input
@@ -606,7 +721,7 @@ export function MemorySettingsPage() {
                 <Button
                   variant="outline"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={importMemoryMutation.isPending}
+                  disabled={readOnly || importMemoryMutation.isPending}
                 >
                   <UploadIcon className="mr-2 h-4 w-4" />
                   {importButton}
@@ -619,15 +734,28 @@ export function MemorySettingsPage() {
                   <DownloadIcon className="mr-2 h-4 w-4" />
                   {isExporting ? t.common.loading : exportButton}
                 </Button>
-                <Button variant="outline" onClick={openCreateFactDialog}>
+                <Button
+                  variant="outline"
+                  onClick={openCreateFactDialog}
+                  disabled={!canEditFacts}
+                >
                   <PlusIcon className="mr-2 h-4 w-4" />
                   {addFactLabel}
                 </Button>
+                {agentName !== undefined && capabilities?.scoped_clear && (
+                  <Button
+                    variant="outline"
+                    disabled={readOnly || clearFacts.isPending}
+                    onClick={() => setClearFactsDialogOpen(true)}
+                  >
+                    {t.settings.memory.clearScope}
+                  </Button>
+                )}
                 <Button
                   variant="destructive"
                   className="ml-auto"
                   onClick={() => setClearDialogOpen(true)}
-                  disabled={clearMemory.isPending}
+                  disabled={readOnly || clearMemory.isPending}
                 >
                   {clearMemory.isPending ? t.common.loading : clearAllLabel}
                 </Button>
@@ -643,6 +771,11 @@ export function MemorySettingsPage() {
             {shouldRenderSummariesBlock ? (
               <div className="min-w-0 rounded-lg border p-4">
                 <div className="text-muted-foreground mb-4 text-sm">
+                  {capabilities?.shared_summaries && (
+                    <strong className="mb-2 block">
+                      {t.settings.memory.sharedSummaries}
+                    </strong>
+                  )}
                   {summaryReadOnly}
                 </div>
                 <SafeStreamdown
@@ -666,6 +799,7 @@ export function MemorySettingsPage() {
                 <div className="mb-4">
                   <h3 className="text-base font-medium">
                     {t.settings.memory.markdown.facts}
+                    {agentName !== undefined ? ` · ${scopeLabel}` : ""}
                   </h3>
                 </div>
 
@@ -711,13 +845,15 @@ export function MemorySettingsPage() {
                                 </span>{" "}
                                 {fact.source === "manual" ? (
                                   t.settings.memory.manualFactSource
-                                ) : (
+                                ) : fact.sourceThreadId ? (
                                   <Link
-                                    href={pathOfThread(fact.source)}
+                                    href={pathOfThread(fact.sourceThreadId)}
                                     className="text-primary underline-offset-4 hover:underline"
                                   >
                                     {t.settings.memory.markdown.table.view}
                                   </Link>
+                                ) : (
+                                  fact.source || t.settings.memory.unknownSource
                                 )}
                               </span>
                             </div>
@@ -732,7 +868,9 @@ export function MemorySettingsPage() {
                               size="icon"
                               className="shrink-0"
                               onClick={() => openEditFactDialog(fact)}
-                              disabled={deleteMemoryFact.isPending}
+                              disabled={
+                                !canEditFacts || deleteMemoryFact.isPending
+                              }
                               title={t.common.edit}
                               aria-label={t.common.edit}
                             >
@@ -744,7 +882,9 @@ export function MemorySettingsPage() {
                               size="icon"
                               className="text-destructive hover:text-destructive shrink-0"
                               onClick={() => setFactToDelete(fact)}
-                              disabled={deleteMemoryFact.isPending}
+                              disabled={
+                                !canEditFacts || deleteMemoryFact.isPending
+                              }
                               title={t.common.delete}
                               aria-label={t.common.delete}
                             >
@@ -760,7 +900,51 @@ export function MemorySettingsPage() {
             ) : null}
           </div>
         )}
-      </SettingsSection>
+      </div>
+
+      <Dialog
+        open={clearFactsDialogOpen}
+        onOpenChange={setClearFactsDialogOpen}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t.settings.memory.clearScope}</DialogTitle>
+            <DialogDescription>
+              {t.settings.memory.clearScopeDescription} {scopeLabel} (
+              {agentName})
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={clearFacts.isPending}
+              onClick={() => setClearFactsDialogOpen(false)}
+            >
+              {t.common.cancel}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={clearFacts.isPending}
+              onClick={() => {
+                if (agentName === undefined) return;
+                void clearFacts
+                  .mutateAsync({ agentName })
+                  .then(() => {
+                    setClearFactsDialogOpen(false);
+                    toast.success(t.settings.memory.clearScopeSuccess);
+                  })
+                  .catch((err: unknown) =>
+                    toast.error(
+                      err instanceof Error ? err.message : String(err),
+                    ),
+                  );
+              }}
+            >
+              {t.settings.memory.clearScope}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={clearDialogOpen} onOpenChange={setClearDialogOpen}>
         <DialogContent>
@@ -772,14 +956,14 @@ export function MemorySettingsPage() {
             <Button
               variant="outline"
               onClick={() => setClearDialogOpen(false)}
-              disabled={clearMemory.isPending}
+              disabled={readOnly || clearMemory.isPending}
             >
               {t.common.cancel}
             </Button>
             <Button
               variant="destructive"
               onClick={() => void handleClearMemory()}
-              disabled={clearMemory.isPending}
+              disabled={readOnly || clearMemory.isPending}
             >
               {clearMemory.isPending ? t.common.loading : clearAllLabel}
             </Button>
@@ -802,6 +986,11 @@ export function MemorySettingsPage() {
             <DialogTitle>
               {factToEdit ? editFactTitle : addFactTitle}
             </DialogTitle>
+            {agentName !== undefined && (
+              <DialogDescription>
+                {t.settings.memory.scopeLabel}: {scopeLabel} ({agentName})
+              </DialogDescription>
+            )}
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -912,6 +1101,9 @@ export function MemorySettingsPage() {
             <DialogTitle>{factDeleteConfirmTitle}</DialogTitle>
             <DialogDescription>
               {factDeleteConfirmDescription}
+              {agentName !== undefined
+                ? ` ${t.settings.memory.scopeLabel}: ${scopeLabel} (${agentName})`
+                : ""}
             </DialogDescription>
           </DialogHeader>
           {factToDelete ? (
@@ -928,14 +1120,14 @@ export function MemorySettingsPage() {
             <Button
               variant="outline"
               onClick={() => setFactToDelete(null)}
-              disabled={deleteMemoryFact.isPending}
+              disabled={!canEditFacts || deleteMemoryFact.isPending}
             >
               {t.common.cancel}
             </Button>
             <Button
               variant="destructive"
               onClick={() => void handleDeleteFact()}
-              disabled={deleteMemoryFact.isPending}
+              disabled={!canEditFacts || deleteMemoryFact.isPending}
             >
               {deleteMemoryFact.isPending ? t.common.loading : t.common.delete}
             </Button>
@@ -986,13 +1178,13 @@ export function MemorySettingsPage() {
             <Button
               variant="outline"
               onClick={() => setPendingImport(null)}
-              disabled={importMemoryMutation.isPending}
+              disabled={readOnly || importMemoryMutation.isPending}
             >
               {t.common.cancel}
             </Button>
             <Button
               onClick={() => void handleConfirmImport()}
-              disabled={importMemoryMutation.isPending}
+              disabled={readOnly || importMemoryMutation.isPending}
             >
               {importMemoryMutation.isPending
                 ? t.common.loading

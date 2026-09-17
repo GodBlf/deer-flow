@@ -99,6 +99,24 @@ class MemoryCorruptionError(MemoryManagerError):
     """Persisted memory cannot be read safely."""
 
 
+class MemoryManagementCapabilities(BaseModel):
+    """Explicit opt-in to scoped human-facing management, independent of recall."""
+
+    scoped_read: bool = False
+    scoped_fact_crud: bool = False
+    scope_discovery: bool = False
+    scoped_clear: bool = False
+    shared_summaries: bool = False
+
+
+class MemoryFactScope(BaseModel):
+    """Storage-owned scope statistics; never includes paths or fact content."""
+
+    agent_name: str
+    fact_count: int = 0
+    last_updated: str | None = None
+
+
 class MemoryManager(BaseModel):
     """Backend-neutral memory manager contract.
 
@@ -312,6 +330,14 @@ class MemoryManager(BaseModel):
         with retrieval override AND set ``supports_search = True`` (required for
         ``mode='tool'``)."""
         raise NotImplementedError(f"search not supported by {type(self).__name__}")
+
+    def management_capabilities(self) -> MemoryManagementCapabilities:
+        """Defaults keep existing third-party adapters unscoped and fail closed."""
+        return MemoryManagementCapabilities()
+
+    def list_fact_scopes(self, *, user_id: str) -> list[MemoryFactScope]:
+        """List this user's persisted fact buckets, independent of agent configs."""
+        raise NotImplementedError(f"list_fact_scopes not supported by {type(self).__name__}")
 
     def get_memory(
         self,
